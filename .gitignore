@@ -14,7 +14,7 @@ venv/
 # Data/Models
 /data/
 /models/
-/backend/models/
+# keep backend models tracked for deploy
 /demo/*.csv
 
 # Logs
