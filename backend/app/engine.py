@@ -20,9 +20,10 @@ JPY_TO_BDT = 0.72
 class JDMPulseEngine:
     def __init__(self):
         model_dir = os.path.join(os.path.dirname(__file__), MODEL_DIR)
-        self.model = joblib.load(os.path.join(model_dir, 'bid_predictor_model.joblib'))
-        self.make_encoder = joblib.load(os.path.join(model_dir, 'make_encoder.joblib'))
-        self.model_encoder = joblib.load(os.path.join(model_dir, 'model_encoder.joblib'))
+        # Load point model and encoders safely so app can boot in CI without artifacts
+        self.model = self._safe_load(os.path.join(model_dir, 'bid_predictor_model.joblib'))
+        self.make_encoder = self._safe_load(os.path.join(model_dir, 'make_encoder.joblib'))
+        self.model_encoder = self._safe_load(os.path.join(model_dir, 'model_encoder.joblib'))
         # Optional quantile models
         self.q20 = self._safe_load(os.path.join(model_dir, 'bid_predictor_q20.joblib'))
         self.q50 = self._safe_load(os.path.join(model_dir, 'bid_predictor_q50.joblib'))
@@ -66,6 +67,8 @@ class JDMPulseEngine:
         }])
 
     def predict_winning_bid(self, vehicle_data: dict) -> int:
+        if self.model is None or self.make_encoder is None or self.model_encoder is None:
+            raise RuntimeError("Model artifacts not loaded on server. Please deploy with models or retrain.")
         features = self._build_features(vehicle_data)
         prediction = self.model.predict(features)[0]
         prediction = max(500_000, min(prediction, 15_000_000))
