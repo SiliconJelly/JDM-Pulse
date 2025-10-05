@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import type { PredictResponse, VehicleInput } from "@/lib/api";
 import { analyzeVehicle } from "@/lib/api";
 import CostBreakdownDonut from "@/components/CostBreakdownDonut";
@@ -58,6 +58,7 @@ export default function AnalyticsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [winProb, setWinProb] = useState<number>(0.7);
   const [recommendedBid, setRecommendedBid] = useState<number | null>(null);
+  const debounceRef = useRef<number | null>(null);
 
   function heuristicRecommended(predict: number, wp: number) {
     // Until backend returns quantiles, scale ±10% from predicted between 50% and 90%
@@ -66,16 +67,14 @@ export default function AnalyticsPanel() {
     return Math.round(predict * scale);
   }
 
-  async function runAnalysis(v: VehicleInput, customBid?: number) {
+  async function runAnalysis(v: VehicleInput, customBid?: number, target?: number) {
     setLoading(true);
     setError(null);
     try {
-      const res = await analyzeVehicle({ ...v, user_bid_jpy: customBid ?? null }, winProb);
+      const res = await analyzeVehicle({ ...v, user_bid_jpy: customBid ?? null }, target ?? winProb);
       setAnalysis(res);
       const basePred = res.recommended_bid_jpy ?? res.predicted_winning_bid_jpy;
-      const rb = res.q50_jpy && res.q80_jpy && res.q20_jpy
-        ? basePred // backend-provided in future
-        : heuristicRecommended(basePred, winProb);
+      const rb = res.q50_jpy && res.q80_jpy && res.q20_jpy ? basePred : heuristicRecommended(basePred, target ?? winProb);
       setRecommendedBid(rb);
       if (!customBid) {
         setUserBid(String(res.predicted_winning_bid_jpy));
@@ -101,7 +100,7 @@ export default function AnalyticsPanel() {
               onClick={() => {
                 setSelected(v);
                 setAnalysis(null);
-                runAnalysis(v);
+                runAnalysis(v, undefined, winProb);
               }}
               className="text-left bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden"
             >
@@ -174,10 +173,13 @@ export default function AnalyticsPanel() {
                   onChange={(e) => {
                     const v = Number(e.target.value) / 100;
                     setWinProb(v);
-                    if (analysis) {
-                      const basePred = analysis.recommended_bid_jpy ?? analysis.predicted_winning_bid_jpy;
-                      setRecommendedBid(heuristicRecommended(basePred, v));
-                    }
+                    // Debounce an API call to recompute recommended bid and breakdown from backend
+                    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+                    debounceRef.current = window.setTimeout(() => {
+                      if (selected) {
+                        runAnalysis(selected, undefined, v);
+                      }
+                    }, 300);
                   }}
                   className="w-full accent-blue-500"
                 />
@@ -189,7 +191,7 @@ export default function AnalyticsPanel() {
                   <button
                     disabled={!selected || loading || !recommendedBid}
                     onClick={() => {
-                      if (selected && recommendedBid) runAnalysis(selected, recommendedBid);
+                      if (selected && recommendedBid) runAnalysis(selected, recommendedBid, winProb);
                     }}
                     className="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded-lg font-semibold disabled:opacity-50"
                   >
@@ -211,10 +213,10 @@ export default function AnalyticsPanel() {
                 </label>
                 <button
                   disabled={!selected || loading}
-                  onClick={() => {
+              onClick={() => {
                     const bid = Number(userBid);
                     if (!isFinite(bid) || bid < 100000) return;
-                    runAnalysis(selected, bid);
+                    runAnalysis(selected, bid, winProb);
                   }}
                   className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 py-3 rounded-lg font-semibold disabled:opacity-50"
                 >
@@ -233,27 +235,17 @@ export default function AnalyticsPanel() {
                 <div className="text-5xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
                   {(() => {
                     if (!analysis) return loading ? "..." : "-";
-                    const rate = 0.02;
-                    const jpyToBdt = analysis.currency_conversion?.jpy_to_bdt_rate ?? 0.72;
-                    const bidUsed = analysis.bid_used_for_calculation ?? analysis.predicted_winning_bid_jpy;
-                    const platformFee = Math.round(bidUsed * jpyToBdt * rate);
-                    const total = analysis.total_landed_cost_bdt + platformFee;
-                    return `৳${total.toLocaleString()}`;
+                    const totalIncl = analysis.total_incl_platform_bdt ?? (analysis.total_landed_cost_bdt + (analysis.platform_fee_bdt || 0));
+                    return `৳${totalIncl.toLocaleString()}`;
                   })()}
                 </div>
                 <div className="text-slate-400 text-sm">
-                  Base landed cost: ৳{analysis ? analysis.total_landed_cost_bdt.toLocaleString() : "-"} • Platform fee 2%
+                  Base landed: ৳{analysis ? analysis.total_landed_cost_bdt.toLocaleString() : "-"} • Platform: ৳{analysis?.platform_fee_bdt?.toLocaleString() ?? "n/a"}
                 </div>
               </div>
 
               {analysis && (
-                (() => {
-                  const rate = 0.02;
-                  const jpyToBdt = analysis.currency_conversion?.jpy_to_bdt_rate ?? 0.72;
-                  const bidUsed = analysis.bid_used_for_calculation ?? analysis.predicted_winning_bid_jpy;
-                  const platformFee = Math.round(bidUsed * jpyToBdt * rate);
-                  return <CostBreakdownDonut analysis={analysis} platformFeeBdt={platformFee} />;
-                })()
+                <CostBreakdownDonut analysis={analysis} platformFeeBdt={analysis.platform_fee_bdt || 0} />
               )}
 
               {analysis && (
